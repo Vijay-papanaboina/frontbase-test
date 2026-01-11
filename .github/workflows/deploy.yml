@@ -1,0 +1,97 @@
+name: Build and Upload
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: "22"
+  CI: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{env.NODE_VERSION}}
+          cache: "npm"
+
+      - name: Fetch environment variables
+        id: fetch-env
+        run: |
+          RESPONSE=$(curl -s -f -w "%{http_code}" -X GET "https://frontbase-backend-ndhs.onrender.com/api/environment/variables/1131991280" -H "Authorization: Bearer ${{secrets.ENV_ACCESS_TOKEN}}" -o envs.json)
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "::error::Failed to fetch environment variables. Status code: $RESPONSE"
+            exit 1
+          fi
+
+          if [ -s envs.json ] && [ "$(cat envs.json)" != "{}" ]; then
+            echo "Creating .env file from fetched variables."
+            jq -r 'to_entries|map("\(.key)=\"\(.value|tostring)\"")|.[]' envs.json > .env
+            echo "Generated .env file:"
+            cat .env
+          else
+            echo "No environment variables found. Skipping .env creation."
+          fi
+
+      - name: Install dependencies
+        id: install
+        run: |
+          if [ -f "package-lock.json" ]; then
+            echo "Installing dependencies with npm ci..."
+            npm ci
+          else
+            echo "Installing dependencies with npm install..."
+            npm install
+          fi
+
+      - name: Build project
+        id: build
+        run: |
+          echo "Running build command: npm run build"
+          npm run build
+
+      - name: Verify build output
+        id: verify
+        run: |
+          if [ ! -d "./dist" ]; then
+            echo "::error::Build directory not found: dist"
+            exit 1
+          fi
+          echo "Build directory verified: dist"
+
+      - name: Zip build output
+        id: zip
+        run: |
+          zip -r dist.zip ./dist
+          echo "Build output zipped successfully"
+
+      - name: Upload to backend
+        id: upload
+        run: |
+          echo "Uploading build to backend..."
+          RESPONSE=$(curl -s -f -w "%{http_code}" -X POST \
+            "https://frontbase-backend-ndhs.onrender.com/api/upload/1131991280" \
+            -F "file=@dist.zip" \
+            -F "projectSlug=Vijay-papanaboina-frontbase-test" \
+            -F "ownerLogin=Vijay-papanaboina" \
+            -F "repoName=frontbase-test" \
+            -F "userEmail=vijaypapanaboina3@gmail.com" \
+            -F "githubId=146018789" \
+            -F "repoId=1131991280" \
+            -H "Authorization: Bearer ${{secrets.ENV_ACCESS_TOKEN}}" \
+            -H "Accept: application/json" \
+            -o response.txt)
+
+          if [ "$RESPONSE" != "200" ]; then
+            echo "::error::Failed to upload build. Status code: $RESPONSE"
+            cat response.txt
+            exit 1
+          fi
+          echo "Build uploaded successfully"
